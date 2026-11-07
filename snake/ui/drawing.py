@@ -1,6 +1,7 @@
 """Low-level drawing helpers: fonts, text, anti-aliased shapes, glow, blur."""
 from __future__ import annotations
 
+import math
 from functools import lru_cache
 from typing import Sequence
 
@@ -103,6 +104,31 @@ def panel(surface: pygame.Surface, rect: pygame.Rect, fill: Color, border: Color
     pygame.draw.rect(surface, fill, rect, border_radius=radius)
     if border:
         pygame.draw.rect(surface, border, rect, width=1, border_radius=radius)
+
+
+def rounded_block(surface: pygame.Surface, rect: pygame.Rect, color: Sequence[int],
+                  radius: int, gloss: bool = True) -> None:
+    """The game's signature shape: a rounded square with a glossy top strip.
+
+    Shared by snake segments, food and the title-screen snake so they all match.
+    """
+    pygame.draw.rect(surface, color, rect, border_radius=radius)
+    if gloss:
+        w, h = rect.w, rect.h
+        strip = pygame.Rect(rect.x + w * 0.18, rect.y + h * 0.14, w * 0.64, max(2, h * 0.16))
+        pygame.draw.rect(surface, shade(color, 0.25), strip, border_radius=max(1, round(h * 0.08)))
+
+
+def progress_ring(surface: pygame.Surface, color: Sequence[int], center: Vec, radius: float,
+                  ratio: float, width: int = 2) -> None:
+    """Smooth clockwise arc from 12 o'clock covering ``ratio`` of a full turn."""
+    ratio = max(0.0, min(1.0, ratio))
+    steps = max(2, round(72 * ratio))
+    points = [(center[0] + math.cos(-math.pi / 2 + math.tau * ratio * i / steps) * radius,
+               center[1] + math.sin(-math.pi / 2 + math.tau * ratio * i / steps) * radius)
+              for i in range(steps + 1)]
+    pygame.draw.lines(surface, color, False, points, width)
+    pygame.draw.aalines(surface, color, False, points)
 
 
 def dim(surface: pygame.Surface, alpha: int = 150, color: Color = (8, 10, 16)) -> None:

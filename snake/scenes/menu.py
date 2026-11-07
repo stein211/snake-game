@@ -6,7 +6,8 @@ from typing import TYPE_CHECKING
 
 import pygame
 
-from ..ui.drawing import aa_circle, blur, draw_text, lerp_color
+from ..ui.drawing import blur, draw_text, lerp_color, rounded_block
+from ..ui.snake_face import draw_snake_face
 from ..ui.widgets import ButtonMenu, MenuItem
 from .base import Scene
 
@@ -29,10 +30,12 @@ class MenuScene(Scene):
         )
         title_font = app.fonts.get(108, bold=True)
         self._title = title_font.render("SNAKE", True, app.theme.accent)
-        glow = pygame.transform.smoothscale(
-            self._title, (self._title.get_width() + 40, self._title.get_height() + 24))
-        self._title_glow = blur(glow, 12)
-        self._title_glow.set_alpha(150)
+        pad = 48  # room for the blur to fade out, otherwise the glow has a hard box edge
+        padded = pygame.Surface((self._title.get_width() + 2 * pad,
+                                 self._title.get_height() + 2 * pad), pygame.SRCALPHA)
+        padded.blit(self._title, (pad, pad))
+        self._title_glow = blur(padded, 10)
+        self._title_glow.set_alpha(170)
 
     def _toggle_mode(self) -> None:
         self.app.mode = self.app.mode.next()
@@ -81,20 +84,23 @@ class MenuScene(Scene):
                 pygame.draw.circle(surface, color, (x, y), 2)
 
     def _draw_wave_snake(self, surface: pygame.Surface, width: int, base_y: int) -> None:
+        """Decorative snake built from the same rounded blocks as the in-game snake."""
         t = self.app.theme
-        count, spacing = 22, 16
+        count, block, gap = 18, 24, 3
+        spacing = block + gap
         travel = width + count * spacing + 120
         head_x = (self._time * 150) % travel - 60
+
+        def y_at(x: float) -> float:
+            return base_y + math.sin(x * 0.02 + self._time * 1.2) * 18
+
         for i in range(count - 1, -1, -1):
             x = head_x - i * spacing
-            if not -20 < x < width + 20:
+            if not -block < x < width + block:
                 continue
-            y = base_y + math.sin(x * 0.022 + self._time * 1.2) * 20
-            k = i / (count - 1)
-            aa_circle(surface, lerp_color(t.snake_head, t.snake_tail, k), (x, y), 12 - 5 * k)
-        hx = head_x
-        hy = base_y + math.sin(hx * 0.022 + self._time * 1.2) * 20
-        if -20 < hx < width + 20:
-            for side in (-1, 1):
-                aa_circle(surface, t.eye, (hx + 3, hy + side * 5), 3.5)
-                aa_circle(surface, t.pupil, (hx + 4.5, hy + side * 5), 1.8)
+            rect = pygame.Rect(0, 0, block, block)
+            rect.center = (round(x), round(y_at(x)))
+            color = lerp_color(t.snake_head, t.snake_tail, i / (count - 1))
+            rounded_block(surface, rect, color, 10 if i == 0 else 6)
+            if i == 0:
+                draw_snake_face(surface, t, rect.center, (1, 0), block, self._time)

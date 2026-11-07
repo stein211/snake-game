@@ -11,11 +11,13 @@ import pygame
 
 from ..config import Settings, Theme
 from ..core import Food, FoodKind, GameMode, Point, World, WorldState
-from .drawing import Vec, aa_circle, aa_polygon, blit_glow, lerp_color, shade
+from .drawing import Vec, aa_polygon, blit_glow, lerp_color, progress_ring, rounded_block, shade
+from .snake_face import draw_snake_face
 
 # Board tiles and snake segments share one shape so the snake sits exactly on the grid.
 TILE_INSET = 1    # px on each side of a tile -> 2 px gap between tiles
 TILE_RADIUS = 7   # corner radius of tiles and snake segments
+HEAD_RADIUS = 12  # the head is rounder: friendlier look
 
 
 class BoardRenderer:
@@ -28,6 +30,7 @@ class BoardRenderer:
         self._mode = mode
         self._board = self._build_board_surface()
         self._shadow = pygame.Surface(self.rect.size, pygame.SRCALPHA)
+        self._coin: pygame.Surface | None = None
 
     # ------------------------------------------------------------ coordinates
     def cell_center(self, gx: float, gy: float, offset: Vec = (0, 0)) -> Vec:
@@ -43,7 +46,7 @@ class BoardRenderer:
         self._draw_frame(surface, offset)
         for food in world.foods:
             self._draw_food(surface, food, time, offset)
-        self._draw_snake(surface, world, alpha, offset)
+        self._draw_snake(surface, world, alpha, time, offset)
 
     def _build_board_surface(self) -> pygame.Surface:
         t, c = self._theme, self._cell
@@ -72,31 +75,53 @@ class BoardRenderer:
         pulse = 0.5 + 0.5 * math.sin(time * 5 + food.position.x)
 
         if food.kind is FoodKind.APPLE:
+            # Apple: a small rounded block with a darker base and a leaf.
             blit_glow(surface, t.apple, (cx, cy), round(c * (0.85 + 0.1 * pulse)), 90)
-            r = c * (0.30 + 0.025 * pulse)
-            aa_circle(surface, shade(t.apple, -0.25), (cx, cy + 1.5), r)
-            aa_circle(surface, t.apple, (cx, cy), r)
-            aa_circle(surface, shade(t.apple, 0.45), (cx - r * 0.35, cy - r * 0.35), r * 0.28)
-            leaf = [(cx + 1, cy - r * 0.9), (cx + r * 0.75, cy - r * 1.45),
-                    (cx + r * 0.95, cy - r * 0.95)]
+            size = round(c * (0.60 + 0.05 * pulse))
+            rect = pygame.Rect(0, 0, size, size)
+            rect.center = (round(cx), round(cy))
+            radius = round(size * 0.3)
+            pygame.draw.rect(surface, shade(t.apple, -0.3), rect.move(0, 2), border_radius=radius)
+            rounded_block(surface, rect, t.apple, radius)
+            top = rect.top
+            pygame.draw.line(surface, shade(t.leaf, -0.45), (rect.centerx, top + 1),
+                             (rect.centerx + 1, top - 3), 2)
+            leaf = [(rect.centerx + 1, top - 2), (rect.centerx + 5, top - 7),
+                    (rect.centerx + 10, top - 5), (rect.centerx + 6, top - 1)]
             aa_polygon(surface, t.leaf, leaf)
             return
 
-        # Golden star with countdown ring; blinks when about to vanish.
+        # Golden reward: a spinning gold coin with a countdown ring.
+        # It blinks when it's about to vanish.
         ratio = food.remaining_ratio
         if ratio < 0.3 and int(time * 8) % 2 == 0:
             return
         blit_glow(surface, t.golden, (cx, cy), round(c * 1.1), 130)
-        outer, inner, spin = c * 0.40, c * 0.18, time * 1.8
-        star = [(cx + math.cos(spin + i * math.pi / 5) * (outer if i % 2 == 0 else inner),
-                 cy + math.sin(spin + i * math.pi / 5) * (outer if i % 2 == 0 else inner))
-                for i in range(10)]
-        aa_polygon(surface, t.golden, star)
-        aa_circle(surface, shade(t.golden, 0.6), (cx, cy), c * 0.08)
-        ring = pygame.Rect(0, 0, c * 1.15, c * 1.15)
-        ring.center = (round(cx), round(cy))
-        pygame.draw.arc(surface, shade(t.golden, -0.15), ring, math.pi / 2,
-                        math.pi / 2 + math.tau * ratio, 2)
+        coin = self._coin_surface()
+        spin = abs(math.cos(time * 2.4))  # 1 = facing us, 0 = edge-on
+        width = max(2, round(coin.get_width() * (0.18 + 0.82 * spin)))
+        coin = pygame.transform.smoothscale(coin, (width, coin.get_height()))
+        surface.blit(coin, coin.get_rect(center=(round(cx), round(cy))))
+        progress_ring(surface, shade(t.golden, -0.15), (cx, cy), c * 0.5, ratio)
+
+    def _coin_surface(self) -> pygame.Surface:
+        """Face-on coin, drawn 4x and scaled down once for smooth edges (cached)."""
+        if self._coin is None:
+            gold, ss = self._theme.golden, 4
+            d = round(self._cell * 0.66) * ss
+            r = d / 2
+            big = pygame.Surface((d, d), pygame.SRCALPHA)
+            pygame.draw.circle(big, shade(gold, -0.35), (r, r), r)            # rim
+            pygame.draw.circle(big, gold, (r, r), r * 0.84)                    # face
+            pygame.draw.circle(big, shade(gold, -0.12), (r, r), r * 0.64, ss)  # inner ring
+            star = [(r + math.cos(-math.pi / 2 + i * math.pi / 5) * (r * 0.38 if i % 2 == 0 else r * 0.16),
+                     r + math.sin(-math.pi / 2 + i * math.pi / 5) * (r * 0.38 if i % 2 == 0 else r * 0.16))
+                    for i in range(10)]
+            pygame.draw.polygon(big, shade(gold, -0.22), star)                 # embossed star
+            pygame.draw.ellipse(big, (255, 255, 255, 130),                     # shine
+                                pygame.Rect(r * 0.42, r * 0.3, r * 0.42, r * 0.24))
+            self._coin = pygame.transform.smoothscale(big, (d // ss, d // ss))
+        return self._coin
 
     # ------------------------------------------------------------------ snake
     @staticmethod
@@ -120,7 +145,7 @@ class BoardRenderer:
         rect.center = (round(cx), round(cy))
         return rect
 
-    def _draw_snake(self, surface: pygame.Surface, world: World, alpha: float,
+    def _draw_snake(self, surface: pygame.Surface, world: World, alpha: float, time: float,
                     offset: Vec) -> None:
         t = self._theme
         segments = self._interpolate(world.previous_body, world.snake.body, alpha)
@@ -143,27 +168,7 @@ class BoardRenderer:
         for i, (x, y) in tail_first:
             color = lerp_color(head_color, t.snake_tail, i / span)
             rect = self._segment_rect(x, y, offset)
-            pygame.draw.rect(surface, color, rect, border_radius=TILE_RADIUS)
-            # Glossy highlight strip near the top edge.
-            s = rect.w
-            gloss = pygame.Rect(rect.x + s * 0.18, rect.y + s * 0.14, s * 0.64, s * 0.16)
-            pygame.draw.rect(surface, shade(color, 0.25), gloss, border_radius=round(s * 0.08))
+            rounded_block(surface, rect, color, HEAD_RADIUS if i == 0 else TILE_RADIUS)
 
-        self._draw_eyes(surface, self.cell_center(*segments[0], offset),
-                        world.snake.direction.value, dead)
-
-    def _draw_eyes(self, surface: pygame.Surface, head: Vec, direction: tuple[int, int],
-                   dead: bool) -> None:
-        t, c = self._theme, self._cell
-        dx, dy = direction
-        px, py = -dy, dx  # perpendicular
-        for side in (-1, 1):
-            ex = head[0] + dx * c * 0.12 + px * c * 0.19 * side
-            ey = head[1] + dy * c * 0.12 + py * c * 0.19 * side
-            aa_circle(surface, t.eye, (ex, ey), c * 0.12)
-            if dead:
-                s = c * 0.07
-                pygame.draw.line(surface, t.pupil, (ex - s, ey - s), (ex + s, ey + s), 2)
-                pygame.draw.line(surface, t.pupil, (ex - s, ey + s), (ex + s, ey - s), 2)
-            else:
-                aa_circle(surface, t.pupil, (ex + dx * c * 0.04, ey + dy * c * 0.04), c * 0.065)
+        head = self._segment_rect(*segments[0], offset)
+        draw_snake_face(surface, t, head.center, world.snake.direction.value, head.w, time, dead)
