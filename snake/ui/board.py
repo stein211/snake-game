@@ -11,9 +11,11 @@ import pygame
 
 from ..config import Settings, Theme
 from ..core import Food, FoodKind, GameMode, Point, World, WorldState
-from .drawing import Vec, aa_circle, aa_polygon, blit_glow, lerp, lerp_color, shade
+from .drawing import Vec, aa_circle, aa_polygon, blit_glow, lerp_color, shade
 
-_SUBSTEPS = 10  # circles drawn between neighbouring segments -> smooth tube
+# Board tiles and snake segments share one shape so the snake sits exactly on the grid.
+TILE_INSET = 1    # px on each side of a tile -> 2 px gap between tiles
+TILE_RADIUS = 7   # corner radius of tiles and snake segments
 
 
 class BoardRenderer:
@@ -47,12 +49,12 @@ class BoardRenderer:
         t, c = self._theme, self._cell
         surf = pygame.Surface(self.rect.size, pygame.SRCALPHA)
         pygame.draw.rect(surf, t.board, surf.get_rect(), border_radius=14)
-        inset = 2
+        inset = TILE_INSET
         for y in range(self._grid[1]):
             for x in range(self._grid[0]):
                 color = t.tile_a if (x + y) % 2 == 0 else t.tile_b
                 tile = pygame.Rect(x * c + inset, y * c + inset, c - 2 * inset, c - 2 * inset)
-                pygame.draw.rect(surf, color, tile, border_radius=6)
+                pygame.draw.rect(surf, color, tile, border_radius=TILE_RADIUS)
         return surf
 
     def _draw_frame(self, surface: pygame.Surface, offset: Vec) -> None:
@@ -110,58 +112,45 @@ class BoardRenderer:
                 points.append((prev.x + dx * alpha, prev.y + dy * alpha))
         return points
 
+    def _segment_rect(self, x: float, y: float, offset: Vec) -> pygame.Rect:
+        """Rounded-square segment, same size as a board tile, centred on (x, y)."""
+        size = self._cell - 2 * TILE_INSET
+        rect = pygame.Rect(0, 0, size, size)
+        cx, cy = self.cell_center(x, y, offset)
+        rect.center = (round(cx), round(cy))
+        return rect
+
     def _draw_snake(self, surface: pygame.Surface, world: World, alpha: float,
                     offset: Vec) -> None:
-        t, c = self._theme, self._cell
+        t = self._theme
         segments = self._interpolate(world.previous_body, world.snake.body, alpha)
-        n = len(segments)
-
-        # Sample a dense path head -> tail, (grid_x, grid_y, index_along_body).
-        samples: list[tuple[float, float, float]] = []
-        for i, (x, y) in enumerate(segments):
-            samples.append((x, y, float(i)))
-            if i + 1 < n:
-                nx, ny = segments[i + 1]
-                if abs(nx - x) + abs(ny - y) <= 1.05:
-                    for k in range(1, _SUBSTEPS):
-                        f = k / _SUBSTEPS
-                        samples.append((lerp(x, nx, f), lerp(y, ny, f), i + f))
-        samples.reverse()  # draw tail first so the head ends up on top
-
-        span = max(1.0, n - 1)
+        if not segments:
+            return
+        span = max(1, len(segments) - 1)
         dead = world.state is WorldState.DEAD
+        head_color = lerp_color(t.snake_head, t.danger, 0.7) if dead else t.snake_head
+        tail_first = list(enumerate(segments))[::-1]  # head is drawn last, on top
 
         # Soft drop shadow on a separate layer so overlaps don't darken.
         self._shadow.fill((0, 0, 0, 0))
-        for x, y, idx in samples:
-            px, py = (x + 0.5) * c, (y + 0.5) * c + 4
-            pygame.draw.circle(self._shadow, (0, 0, 0), (px, py), c * (0.46 - 0.12 * idx / span))
+        board_offset = (-self.rect.x, -self.rect.y + 4)
+        for _, (x, y) in tail_first:
+            pygame.draw.rect(self._shadow, (0, 0, 0), self._segment_rect(x, y, board_offset),
+                             border_radius=TILE_RADIUS)
         self._shadow.set_alpha(70)
         surface.blit(self._shadow, (self.rect.x + offset[0], self.rect.y + offset[1]))
 
-        head_color = lerp_color(t.snake_head, t.danger, 0.7) if dead else t.snake_head
-        for x, y, idx in samples:
-            k = idx / span
-            radius = c * (0.46 - 0.12 * k)
-            color = lerp_color(head_color, t.snake_tail, k)
-            cx, cy = self.cell_center(x, y, offset)
-            # Only the outermost samples need an AA edge; interior overlaps would
-            # otherwise draw visible rings (stripes).
-            if idx == 0 or idx == span:
-                aa_circle(surface, color, (cx, cy), radius)
-            else:
-                pygame.draw.circle(surface, color, (cx, cy), radius)
+        for i, (x, y) in tail_first:
+            color = lerp_color(head_color, t.snake_tail, i / span)
+            rect = self._segment_rect(x, y, offset)
+            pygame.draw.rect(surface, color, rect, border_radius=TILE_RADIUS)
+            # Glossy highlight strip near the top edge.
+            s = rect.w
+            gloss = pygame.Rect(rect.x + s * 0.18, rect.y + s * 0.14, s * 0.64, s * 0.16)
+            pygame.draw.rect(surface, shade(color, 0.25), gloss, border_radius=round(s * 0.08))
 
-        # Glossy highlight along the spine.
-        for x, y, idx in samples:
-            k = idx / span
-            cx, cy = self.cell_center(x, y, offset)
-            color = shade(lerp_color(head_color, t.snake_tail, k), 0.22)
-            pygame.draw.circle(surface, color, (cx - c * 0.07, cy - c * 0.09), c * (0.13 - 0.05 * k))
-
-        if segments:
-            self._draw_eyes(surface, self.cell_center(*segments[0], offset),
-                            world.snake.direction.value, dead)
+        self._draw_eyes(surface, self.cell_center(*segments[0], offset),
+                        world.snake.direction.value, dead)
 
     def _draw_eyes(self, surface: pygame.Surface, head: Vec, direction: tuple[int, int],
                    dead: bool) -> None:
